@@ -20,23 +20,24 @@ Built with an explainable real-time **Threat Engine** and a pure **SQLite backen
 
 ## 🧠 Architecture
 
-Sentinel was completely redesigned to handle massive network loads without Out-Of-Memory (OOM) crashes by utilizing a split-process SQLite Write-Ahead Logging (WAL) architecture.
+Sentinel utilizes a highly robust decoupled architecture. By separating packet sniffing, threat enrichment, and UI rendering into distinct processes with SQLite Write-Ahead Logging (WAL), Sentinel completely avoids the Out-Of-Memory (OOM) crashes that plague typical Scapy sniffers.
 
 ```mermaid
 flowchart TD
-    A[Scapy Packet Sniffer] -->|Writes Real-Time Data| B[(SQLite Database)]
-    B -->|LIMIT 5000 Queries| C[Streamlit Dashboard]
+    A[Scapy Packet Sniffer] -->|Writes Real-Time Data| B[(Sentinel DB)]
     
-    C --> D[Threat Detection Engine]
-    C --> E[3D GeoIP PyDeck Map]
-    C --> F[Timeline Analytics]
-    C --> G[Protocol Analysis]
+    B -->|Limits to 5000 Packets| C[Streamlit Dashboard]
     
-    C -->|On Demand| H[PyVis Knowledge Graph]
+    B -->|Polls New IPs| D[Enrichment Worker]
+    D -->|Queries API| E[AbuseIPDB Engine]
+    E -->|Calculates Risk| D
+    D -->|Caches Intelligence| F[(Intel DB)]
     
-    subgraph Caching Layer
-    I[(GeoIP Local DB)] -.-> C
-    end
+    F --> C
+    
+    C --> G[Threat Engine]
+    C --> H[Interactive 3D Arc Map]
+    C --> I[Risk-Aware Knowledge Graph]
 ```
 
 ---
@@ -45,9 +46,10 @@ flowchart TD
 
 - **Live Packet Capture**: Captures continuous background network traffic without exploding memory thanks to periodic SQLite flushing.
 - **Explainable Threat Engine**: Automatically flags suspicious activity (Port Scans, Cleartext HTTP, Large Outbound Data) and provides human-readable evidence for the alert.
-- **Host Reputation Intelligence**: Validates destination IP addresses against known, trusted ISP and cloud infrastructure blocks.
-- **3D GeoIP Arc Mapping**: Pings endpoints to generate a global PyDeck map with 3D glowing traffic arcs flying from your local machine to the destination.
-- **Interactive Knowledge Graph**: Generates a dynamic PyVis network graph natively from the SQLite `connections` table to visualize relationships between your computer, protocols, and external corporations.
+- **Risk Scoring Algorithm**: Generates a composite Risk Score (0-100) by combining AbuseIPDB intel, adversarial geography context, VPN/Tor infrastructure usage, and local behavioral anomalies.
+- **Automated Threat Intelligence**: A background daemon automatically queries new external IP addresses against AbuseIPDB and caches results in `intel.db` to prevent API rate-limiting.
+- **3D GeoIP Arc Mapping**: Visualizes global traffic on a PyDeck map with 3D glowing traffic arcs flying from your local machine to the destination.
+- **Risk-Aware Knowledge Graph**: Generates a dynamic PyVis network graph natively from SQLite, coloring nodes (Red/Yellow/Green) based on their assigned Threat Classification.
 
 ---
 
@@ -64,29 +66,39 @@ source venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. Optional: Configure API Keys
+# Create a .env file to enable live AbuseIPDB queries (otherwise, it runs in simulation mode)
+echo "ABUSEIPDB_API_KEY=your_key_here" > .env
 ```
 
 ---
 
 ## 💻 Usage Instructions
 
-Because Sentinel uses a split architecture for stability, you must run the backend and frontend in separate terminals.
+Sentinel utilizes a 3-process architecture for maximum stability. You must run these in separate terminal windows.
 
-### Step 1: Start the Engine (Terminal 1)
-You must run the background packet sniffer with `sudo` privileges to allow it to listen to your network interface.
+### Step 1: Start the Packet Sniffer (Terminal 1)
+You must run the background packet sniffer with `sudo` privileges so Scapy can bind to the network interface.
 ```bash
 source venv/bin/activate
 sudo python3 packet_sniffer.py
 ```
-*Leave this running in the background. It will automatically initialize the database and populate it using WAL mode.*
 
-### Step 2: Start the UI (Terminal 2)
-Open a new terminal tab to launch the live Streamlit dashboard.
+### Step 2: Start the Threat Enrichment Daemon (Terminal 2)
+Launch the background worker that polls SQLite for new IPs and securely caches AbuseIPDB threat intelligence.
+```bash
+source venv/bin/activate
+python3 enrichment_worker.py
+```
+
+### Step 3: Start the Threat Dashboard (Terminal 3)
+Launch the live Streamlit UI to visualize the SQLite streams.
 ```bash
 source venv/bin/activate
 streamlit run dashboard.py
 ```
-*The dashboard will instantly open in your browser (`http://localhost:8502`) and visualize the incoming SQLite stream.*
+*The dashboard will instantly open in your browser (`http://localhost:8502`).*
 
 ---
 
