@@ -21,8 +21,11 @@ import sys
 import socket
 import json
 from datetime import datetime
+import database
 
-packets = []
+packets_buffer = []
+total_packets_count = 0
+total_bytes_count = 0
 protocol_count = {
     "TCP": 0,
     "UDP": 0,
@@ -111,10 +114,14 @@ def process_packet(packet):
             "protocol": protocol_name,
             "length": len(packet),
             "sport": src_port,
-            "dport": dst_port
+            "dport": dst_port,
+            "hostname": dst_ip
         }
         
-        packets.append(packet_info)
+        global total_packets_count, total_bytes_count
+        total_packets_count += 1
+        total_bytes_count += len(packet)
+        packets_buffer.append(packet_info)
         
         # 9. Count Protocols
         if protocol_name in protocol_count:
@@ -150,26 +157,16 @@ def process_packet(packet):
         connections_table[conn_key]["bytes"] += len(packet)
         
         # 15. Show live progress
-        sys.stdout.write(f"\r[INFO] Captured {len(packets)} packets...")
+        sys.stdout.write(f"\r[INFO] Captured {total_packets_count} packets...")
         sys.stdout.flush()
         
-        # 16. Periodically flush to JSON for real-time dashboard
-        if len(packets) % 25 == 0:
+        # 16. Periodically flush to SQLite for real-time dashboard
+        if len(packets_buffer) >= 25:
             try:
-                with open("packets.json", "w") as f:
-                    json.dump(packets, f, indent=4)
-                    
-                export_data = []
-                for (i1, i2, p, s), stats in connections_table.items():
-                    export_data.append({
-                        "ip1": i1, "ip2": i2,
-                        "host1": i1, "host2": i2,
-                        "protocol": p, "service": s,
-                        "packets": stats["packets"], "bytes": stats["bytes"]
-                    })
-                with open("connections.json", "w") as f:
-                    json.dump(export_data, f, indent=4)
-            except Exception:
+                database.insert_packets(packets_buffer)
+                database.upsert_connections(connections_table)
+                packets_buffer.clear()
+            except Exception as e:
                 pass
 
 def print_report():
@@ -192,18 +189,25 @@ def print_report():
             hostname = ip
         resolved_hostnames[ip] = hostname
         
-    # Add hostnames to packet storage for Phase 3
-    for p in packets:
+    # Add hostnames to packet storage for Phase 3 (if any are left in buffer)
+    for p in packets_buffer:
         p['hostname'] = resolved_hostnames.get(p['dst'], p['dst'])
     
-    total_packets = len(packets)
-    print(f"\nTotal Packets: {total_packets}")
-    
-    if total_packets > 0:
-        total_bytes = sum(p['length'] for p in packets)
-        avg_size = total_bytes / total_packets
+    # Flush remaining buffer
+    if packets_buffer:
+        try:
+            database.insert_packets(packets_buffer)
+            database.upsert_connections(connections_table)
+            packets_buffer.clear()
+        except Exception as e:
+            print(f"Warning: Could not flush final packets: {e}")
         
-        print(f"Total Bytes  : {total_bytes}")
+    print(f"\nTotal Packets: {total_packets_count}")
+    
+    if total_packets_count > 0:
+        avg_size = total_bytes_count / total_packets_count
+        
+        print(f"Total Bytes  : {total_bytes_count}")
         print(f"Average Size : {avg_size:.2f} bytes")
         
         print("\nProtocol Counts:")
@@ -229,26 +233,11 @@ def print_report():
             print(f"Packets: {stats['packets']}")
             print(f"Bytes: {stats['bytes']} bytes")
             
-    print("\n[INFO] Saving connections to connections.json...")
-    export_data = []
-    for (ip1, ip2, proto, svc), stats in connections_table.items():
-        export_data.append({
-            "ip1": ip1,
-            "ip2": ip2,
-            "host1": resolved_hostnames.get(ip1, ip1),
-            "host2": resolved_hostnames.get(ip2, ip2),
-            "protocol": proto,
-            "service": svc,
-            "packets": stats["packets"],
-            "bytes": stats["bytes"]
-        })
-        
-    with open("connections.json", "w") as f:
-        json.dump(export_data, f, indent=4)
-        
-    print("[INFO] Saving raw packets to packets.json...")
-    with open("packets.json", "w") as f:
-        json.dump(packets, f, indent=4)
+    print("\n[INFO] Saving final connections to database...")
+    try:
+        database.upsert_connections(connections_table)
+    except Exception as e:
+        print(f"Warning: Could not save final connections: {e}")
             
     print("\n[INFO] Stopping packet capture. Goodbye!")
 
@@ -264,6 +253,7 @@ def main():
     try:
         # Start sniffing packets!
         # - store: Set to 0 (False) so Scapy doesn't keep massive packet objects in memory.
+        database.init_db()
         sniff(prn=process_packet, store=0, filter="ip", count=0)
         print_report()
     except PermissionError:

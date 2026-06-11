@@ -10,6 +10,11 @@ lib/
 *.html
 !README.html
 
+# Database Files
+*.db
+*.db-shm
+*.db-wal
+
 # IDEs and OS files
 .vscode/
 .idea/

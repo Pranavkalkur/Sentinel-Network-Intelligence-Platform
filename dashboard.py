@@ -2,15 +2,17 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import sqlite3
 import altair as alt
 import requests
 import pydeck as pdk
 from streamlit_autorefresh import st_autorefresh
+from graph_generator import generate_graph
+
+st.set_page_config(page_title="AI-Powered Network Intelligence", layout="wide")
 
 # Auto-refresh every 2 seconds
 st_autorefresh(interval=2000, limit=None, key="data_refresh")
-
-st.set_page_config(page_title="AI-Powered Network Intelligence", layout="wide")
 
 # Sidebar
 st.sidebar.title("📡 Visual Packet Explorer")
@@ -39,23 +41,58 @@ def get_reputation(hostname):
             return name
     return "Unknown"
 
-GEOIP_CACHE_FILE = "geoip_cache.json"
+GEOIP_DB = "geoip.db"
+
+def init_geoip_db():
+    conn = sqlite3.connect(GEOIP_DB)
+    c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL;")
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS geoip_cache (
+            ip TEXT PRIMARY KEY,
+            country TEXT,
+            isp TEXT,
+            lat REAL,
+            lon REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
 def load_geoip_cache():
-    if os.path.exists(GEOIP_CACHE_FILE):
-        try:
-            with open(GEOIP_CACHE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+    if not os.path.exists(GEOIP_DB):
+        init_geoip_db()
+    conn = sqlite3.connect(GEOIP_DB)
+    df = pd.read_sql_query("SELECT * FROM geoip_cache", conn)
+    conn.close()
+    
+    cache = {}
+    for _, row in df.iterrows():
+        cache[row['ip']] = {
+            'country': row['country'],
+            'isp': row['isp'],
+            'lat': row['lat'],
+            'lon': row['lon']
+        }
+    return cache
 
-def save_geoip_cache(cache):
-    try:
-        with open(GEOIP_CACHE_FILE, "w") as f:
-            json.dump(cache, f)
-    except Exception:
-        pass
+def save_geoip_batch(batch_data):
+    if not batch_data: return
+    conn = sqlite3.connect(GEOIP_DB)
+    c = conn.cursor()
+    values = []
+    for ip, data in batch_data.items():
+        if data:
+            values.append((ip, data.get('country'), data.get('isp'), data.get('lat'), data.get('lon')))
+        else:
+            values.append((ip, 'Unknown', 'Unknown', None, None))
+            
+    c.executemany('''
+        INSERT OR IGNORE INTO geoip_cache (ip, country, isp, lat, lon)
+        VALUES (?, ?, ?, ?, ?)
+    ''', values)
+    conn.commit()
+    conn.close()
 
 def get_geoip_data(ips):
     cache = load_geoip_cache()
@@ -66,6 +103,7 @@ def get_geoip_data(ips):
     new_ips = [ip for ip in external_ips if ip not in cache]
     
     if new_ips:
+        batch_saves = {}
         for i in range(0, len(new_ips), 100):
             batch = new_ips[i:i+100]
             try:
@@ -76,16 +114,30 @@ def get_geoip_data(ips):
                     for item in data:
                         if item.get('status') == 'success':
                             cache[item['query']] = item
+                            batch_saves[item['query']] = item
                         else:
                             cache[item['query']] = {} # Prevent constant retries for invalid IPs
+                            batch_saves[item['query']] = {}
                 else:
                     # Rate limited or error, stop querying for now
                     break
             except Exception as e:
                 break
-        save_geoip_cache(cache)
+        save_geoip_batch(batch_saves)
         
     return cache
+
+@st.cache_data(ttl=86400)
+def get_local_coords():
+    try:
+        response = requests.get("http://ip-api.com/json/", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('status') == 'success':
+                return data.get('lat'), data.get('lon')
+    except Exception:
+        pass
+    return None, None
 
 def analyze_threats(df_pkts):
     alerts = []
@@ -186,19 +238,22 @@ def analyze_threats(df_pkts):
     return max(0, score), alerts
 
 def load_data():
-    connections, packets = [], []
-    if os.path.exists("connections.json"):
-        with open("connections.json", "r") as f:
-            try: connections = json.load(f)
-            except Exception: pass
-    if os.path.exists("packets.json"):
-        with open("packets.json", "r") as f:
-            try: packets = json.load(f)
-            except Exception: pass
-            
-    df_conn = pd.DataFrame(connections)
-    df_pkts = pd.DataFrame(packets)
-    return df_conn, df_pkts
+    db_path = "sentinel.db"
+    if not os.path.exists(db_path):
+        return pd.DataFrame(), pd.DataFrame()
+        
+    try:
+        # Open the DB in read-only mode so the normal user can read a root-owned file
+        db_uri = f"file:{os.path.abspath(db_path)}?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=10)
+        
+        # Limit to the most recent 5,000 packets to prevent Streamlit from crashing/OOMing
+        df_pkts = pd.read_sql_query("SELECT * FROM packets ORDER BY id DESC LIMIT 5000", conn)
+        df_conn = pd.read_sql_query("SELECT * FROM connections", conn)
+        conn.close()
+        return df_conn, df_pkts
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame()
 
 df_conn, df_pkts = load_data()
 
@@ -305,7 +360,11 @@ with tabs[2]:
         map_data = df_ep.dropna(subset=['Lat', 'Lon'])
         if not map_data.empty:
             st.subheader("Global Traffic Map")
-            layer = pdk.Layer(
+            
+            layers = []
+            
+            # 1. Scatterplot Layer for endpoints
+            scatter_layer = pdk.Layer(
                 "ScatterplotLayer",
                 map_data,
                 get_position=["Lon", "Lat"],
@@ -315,10 +374,33 @@ with tabs[2]:
                 radius_max_pixels=30,
                 pickable=True
             )
-            view_state = pdk.ViewState(latitude=20, longitude=0, zoom=1)
+            layers.append(scatter_layer)
+            
+            # 2. Arc Layer from Local to Endpoints
+            local_lat, local_lon = get_local_coords()
+            if local_lat is not None and local_lon is not None:
+                map_data['LocalLat'] = local_lat
+                map_data['LocalLon'] = local_lon
+                
+                arc_layer = pdk.Layer(
+                    "ArcLayer",
+                    data=map_data,
+                    get_source_position=["LocalLon", "LocalLat"],
+                    get_target_position=["Lon", "Lat"],
+                    get_source_color=[0, 255, 0, 160],
+                    get_target_color=[200, 30, 0, 160],
+                    auto_highlight=True,
+                    width_scale=2,
+                    get_width="1 + (Packets / 100)",
+                    width_min_pixels=2,
+                    width_max_pixels=10
+                )
+                layers.append(arc_layer)
+                
+            view_state = pdk.ViewState(latitude=20, longitude=0, zoom=1, pitch=45)
             st.pydeck_chart(pdk.Deck(
                 map_style="mapbox://styles/mapbox/dark-v10",
-                layers=[layer],
+                layers=layers,
                 initial_view_state=view_state,
                 tooltip={"text": "{Resolved Host}\n{Country}\nISP: {ISP}\nPackets: {Packets}"}
             ))
@@ -414,9 +496,16 @@ with tabs[5]:
 # 7. NETWORK GRAPH
 with tabs[6]:
     st.header("Knowledge Graph")
+    st.markdown("Visualize the relationships between your local machine, external domains, services, and protocols.")
+    
+    if st.button("🔄 Generate/Refresh Knowledge Graph"):
+        with st.spinner("Querying SQLite and building graph..."):
+            generate_graph(db_path="sentinel.db", output_html="network_graph.html")
+            st.success("Graph updated!")
+            
     if os.path.exists("network_graph.html"):
         with open("network_graph.html", "r", encoding="utf-8") as f:
             html_data = f.read()
         st.components.v1.html(html_data, height=800, scrolling=True)
     else:
-        st.info("Network graph not found.")
+        st.info("Click the button above to generate the network graph.")

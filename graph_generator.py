@@ -25,17 +25,39 @@ def detect_company(hostname):
             return company
     return hostname
 
-def generate_graph(json_file="connections.json", output_html="network_graph.html"):
-    if not os.path.exists(json_file):
-        print(f"Error: {json_file} not found. Please run packet_sniffer.py first.")
+def generate_graph(db_path="sentinel.db", output_html="network_graph.html"):
+    if not os.path.exists(db_path):
+        print(f"Error: {db_path} not found. Please run packet_sniffer.py first.")
         return
 
-    with open(json_file, 'r') as f:
-        connections = json.load(f)
-
-    if not connections:
-        print("No connections found in JSON.")
+    import sqlite3
+    db_uri = f"file:{os.path.abspath(db_path)}?mode=ro"
+    try:
+        conn = sqlite3.connect(db_uri, uri=True, timeout=10)
+        c = conn.cursor()
+        c.execute("SELECT ip1, ip2, host1, host2, protocol, service, packets FROM connections")
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"Database error: {e}")
         return
+
+    if not rows:
+        print("No connections found in database.")
+        return
+
+    # Map rows to dictionary
+    connections = []
+    for row in rows:
+        connections.append({
+            'ip1': row[0],
+            'ip2': row[1],
+            'host1': row[2],
+            'host2': row[3],
+            'protocol': row[4],
+            'service': row[5],
+            'packets': row[6]
+        })
 
     # Identify the local machine IP by finding the most frequently occurring IP
     ip_counts = {}
