@@ -365,8 +365,8 @@ with tabs[5]:
         # 1. Top ISP/Company
         df_rep = df_conn.copy()
         df_rep['DomainRep'] = df_rep['host2'].apply(get_reputation)
-        geoip_map = get_geoip_data(df_conn['ip2'].tolist())
-        df_rep['ISP'] = df_rep['ip2'].map(lambda ip: geoip_map.get(ip, {}).get('isp', 'Unknown'))
+        intel_map = get_intel_data(df_conn['ip2'].tolist())
+        df_rep['ISP'] = df_rep['ip2'].map(lambda ip: intel_map.get(ip, {}).get('isp', 'Unknown'))
         
         def det_rep(row):
             if row['DomainRep'] != 'Unknown': return row['DomainRep']
