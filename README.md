@@ -1,31 +1,53 @@
-<h1 align="center">
-  📡 Sentinel: AI-Powered Network Intelligence
-</h1>
+<div align="center">
+  <h1>📡 Sentinel Network Intelligence Platform</h1>
+  <p><strong>An advanced, real-time network traffic analyzer with built-in threat detection, host reputation, and interactive 3D GeoIP mapping.</strong></p>
 
-<p align="center">
-  <strong>A real-time network traffic analyzer with built-in threat detection, host reputation, and interactive 3D GeoIP mapping.</strong>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.8+-blue.svg" alt="Python Version">
-  <img src="https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B.svg" alt="Streamlit">
-  <img src="https://img.shields.io/badge/Scapy-Packet_Capture-orange.svg" alt="Scapy">
-</p>
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.8+-blue.svg" alt="Python Version">
+    <img src="https://img.shields.io/badge/Streamlit-1.28+-red.svg" alt="Streamlit">
+    <img src="https://img.shields.io/badge/Database-SQLite3_WAL-green.svg" alt="SQLite">
+    <img src="https://img.shields.io/badge/Mapping-PyDeck_3D-orange.svg" alt="PyDeck">
+  </p>
+</div>
 
 ---
 
 ## 🚀 Overview
 
-Most packet sniffers just capture data. **Sentinel** acts as an active Intelligence tool. 
+Most packet sniffers just capture data. **Sentinel** acts as an active Network Intelligence tool. 
 
-Built with an explainable real-time Threat Engine, Sentinel analyzes your local network traffic to detect port scans, unencrypted HTTP traffic, large outbound transfers, and DNS tunneling attempts. It automatically validates unknown hosts against ISP data and visualizes your endpoints on a live, interactive 3D World Map.
+Built with an explainable real-time **Threat Engine** and a pure **SQLite backend**, Sentinel analyzes your local network traffic to detect port scans, unencrypted HTTP traffic, large outbound transfers, and DNS tunneling attempts. It automatically validates unknown hosts against ISP data and visualizes your endpoints on a live, interactive 3D World Map and an interactive Knowledge Graph.
 
-### ✨ Key Features
-- **Live Continuous Capture:** Sniff network traffic indefinitely and asynchronously update the dashboard without dropping packets.
-- **Explainable Threat Engine:** Alerts are generated with strict, statistically sound confidence scores and evidence strings (e.g., detecting standard deviations in traffic spikes).
-- **Interactive GeoIP Map:** All endpoints are visually mapped using PyDeck on a beautiful dark-mode interface.
-- **ISP-Driven Host Intelligence:** Identifies untrusted hosts precisely by extracting registered ISP boundaries (e.g., Google LLC, Cloudflare).
-- **Network Knowledge Graph:** Generates interactive node graphs to visualize the relationships between local apps and external domains.
+## 🧠 Architecture
+
+Sentinel was completely redesigned to handle massive network loads without Out-Of-Memory (OOM) crashes by utilizing a split-process SQLite Write-Ahead Logging (WAL) architecture.
+
+```mermaid
+flowchart TD
+    A[Scapy Packet Sniffer] -->|Writes Real-Time Data| B[(SQLite Database)]
+    B -->|LIMIT 5000 Queries| C[Streamlit Dashboard]
+    
+    C --> D[Threat Detection Engine]
+    C --> E[3D GeoIP PyDeck Map]
+    C --> F[Timeline Analytics]
+    C --> G[Protocol Analysis]
+    
+    C -->|On Demand| H[PyVis Knowledge Graph]
+    
+    subgraph Caching Layer
+    I[(GeoIP Local DB)] -.-> C
+    end
+```
+
+---
+
+## ✨ Premium Features
+
+- **Live Packet Capture**: Captures continuous background network traffic without exploding memory thanks to periodic SQLite flushing.
+- **Explainable Threat Engine**: Automatically flags suspicious activity (Port Scans, Cleartext HTTP, Large Outbound Data) and provides human-readable evidence for the alert.
+- **Host Reputation Intelligence**: Validates destination IP addresses against known, trusted ISP and cloud infrastructure blocks.
+- **3D GeoIP Arc Mapping**: Pings endpoints to generate a global PyDeck map with 3D glowing traffic arcs flying from your local machine to the destination.
+- **Interactive Knowledge Graph**: Generates a dynamic PyVis network graph natively from the SQLite `connections` table to visualize relationships between your computer, protocols, and external corporations.
 
 ---
 
@@ -33,10 +55,10 @@ Built with an explainable real-time Threat Engine, Sentinel analyzes your local 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/Sentinel.git
-cd Sentinel
+git clone https://github.com/Pranavkalkur/Sentinel-Network-Intelligence-Platform.git
+cd Sentinel-Network-Intelligence-Platform
 
-# 2. Create a virtual environment
+# 2. Create and activate a virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
@@ -46,48 +68,34 @@ pip install -r requirements.txt
 
 ---
 
-## 💻 Usage
+## 💻 Usage Instructions
 
-Sentinel runs in two parts: the background packet sniffer, and the Streamlit dashboard.
+Because Sentinel uses a split architecture for stability, you must run the backend and frontend in separate terminals.
 
-### 1. Start the Live Capture
-To capture packets, the sniffer must be run with root privileges.
+### Step 1: Start the Engine (Terminal 1)
+You must run the background packet sniffer with `sudo` privileges to allow it to listen to your network interface.
 ```bash
+source venv/bin/activate
 sudo python3 packet_sniffer.py
 ```
-*Leave this terminal running in the background. It will automatically flush state to JSON files every 25 packets.*
+*Leave this running in the background. It will automatically initialize the database and populate it using WAL mode.*
 
-### 2. Launch the Dashboard
-In a **new terminal window**, start the Streamlit UI:
+### Step 2: Start the UI (Terminal 2)
+Open a new terminal tab to launch the live Streamlit dashboard.
 ```bash
+source venv/bin/activate
 streamlit run dashboard.py
 ```
+*The dashboard will instantly open in your browser (`http://localhost:8502`) and visualize the incoming SQLite stream.*
 
 ---
 
-## 🧠 Architecture
+## 🛡️ The Threat Engine Rules
 
-```mermaid
-flowchart LR
-    A[Raw Network Interface] -->|Scapy| B[Live Sniffer Engine]
-    B --> C[Data Serialization]
-    C -->|JSON| D[Streamlit Dashboard]
-    
-    subgraph Streamlit Interface
-        D --> E[Interactive World Map]
-        D --> F[Threat Detection Engine]
-        D --> G[Host Reputation Validation]
-    end
-```
+Sentinel currently monitors for 5 distinct behavioral anomalies:
 
----
-
-## 🛡️ Example Alerts
-- **Port Scan Detected (95% Confidence):** Observed 24 unique destination ports targeted within a 3.0s window.
-- **Cleartext HTTP (100% Confidence):** Packet captured transmitting on unencrypted port 80. Credentials and payloads are exposed.
-- **Traffic Spike (85% Confidence):** Traffic volume reached 150 pps, violating the established baseline of 2.1 pps (+3 standard deviations).
-
----
-<p align="center">
-  <i>Built for modern security analysis.</i>
-</p>
+1. **Port Scans:** Flags external IPs that connect to more than 10 unique destination ports within a rolling 3.0-second window.
+2. **Cleartext Transmissions:** Flags any packets operating on Port 80 (HTTP), warning of potential credential exposure.
+3. **Large Outbound Exfiltration:** Identifies your local machine IP and tracks isolated outbound transfers exceeding 500MB to a single destination.
+4. **Traffic Spikes:** Calculates a rolling baseline of packets-per-second (pps) and flags bursts exceeding 3 standard deviations above the mean.
+5. **DNS Tunneling:** Inspects Port 53 queries for abnormally long hostname strings (>50 chars), a common technique for padded malware exfiltration.
