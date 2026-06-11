@@ -65,7 +65,7 @@ def upsert_connections(connections_table):
     # connections_table: {(ip1, ip2, protocol, service): {"packets": count, "bytes": bytes}}
     for (i1, i2, p, s), stats in connections_table.items():
         # Hostnames can be resolved later, we store IP for now
-        values.append((i1, i2, i1, i2, p, s, stats["packets"], stats["bytes"], stats["packets"], stats["bytes"]))
+        values.append((i1, i2, i1, i2, p, s, stats["packets"], stats["bytes"]))
         
     c.executemany('''
         INSERT INTO connections (ip1, ip2, host1, host2, protocol, service, packets, bytes)

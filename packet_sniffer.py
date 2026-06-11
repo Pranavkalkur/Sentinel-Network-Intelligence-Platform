@@ -167,6 +167,7 @@ def process_packet(packet):
                 database.upsert_connections(connections_table)
                 packets_buffer.clear()
             except Exception as e:
+                print(f"\\n[ERROR] Database flush failed: {e}")
                 pass
 
 def print_report():
