@@ -41,90 +41,53 @@ def get_reputation(hostname):
             return name
     return "Unknown"
 
-GEOIP_DB = "geoip.db"
+INTEL_DB = "intel.db"
 
-def init_geoip_db():
-    conn = sqlite3.connect(GEOIP_DB)
+def init_intel_db():
+    conn = sqlite3.connect(INTEL_DB)
     c = conn.cursor()
     c.execute("PRAGMA journal_mode=WAL;")
     c.execute('''
-        CREATE TABLE IF NOT EXISTS geoip_cache (
+        CREATE TABLE IF NOT EXISTS threat_cache(
             ip TEXT PRIMARY KEY,
+            risk_score INTEGER,
+            classification TEXT,
             country TEXT,
             isp TEXT,
-            lat REAL,
-            lon REAL
+            usage_type TEXT,
+            abuse_score INTEGER,
+            last_checked TIMESTAMP
         )
     ''')
     conn.commit()
     conn.close()
 
-def load_geoip_cache():
-    if not os.path.exists(GEOIP_DB):
-        init_geoip_db()
-    conn = sqlite3.connect(GEOIP_DB)
-    df = pd.read_sql_query("SELECT * FROM geoip_cache", conn)
-    conn.close()
-    
-    cache = {}
-    for _, row in df.iterrows():
-        cache[row['ip']] = {
-            'country': row['country'],
-            'isp': row['isp'],
-            'lat': row['lat'],
-            'lon': row['lon']
-        }
-    return cache
-
-def save_geoip_batch(batch_data):
-    if not batch_data: return
-    conn = sqlite3.connect(GEOIP_DB)
-    c = conn.cursor()
-    values = []
-    for ip, data in batch_data.items():
-        if data:
-            values.append((ip, data.get('country'), data.get('isp'), data.get('lat'), data.get('lon')))
-        else:
-            values.append((ip, 'Unknown', 'Unknown', None, None))
-            
-    c.executemany('''
-        INSERT OR IGNORE INTO geoip_cache (ip, country, isp, lat, lon)
-        VALUES (?, ?, ?, ?, ?)
-    ''', values)
-    conn.commit()
-    conn.close()
-
-def get_geoip_data(ips):
-    cache = load_geoip_cache()
-    
-    external_ips = [ip for ip in ips if not (ip.startswith("192.168.") or ip.startswith("10.") or ip.startswith("172.") or ip.startswith("224.") or ip.startswith("127.") or ip.startswith("255."))]
-    external_ips = list(set(external_ips))
-    
-    new_ips = [ip for ip in external_ips if ip not in cache]
-    
-    if new_ips:
-        batch_saves = {}
-        for i in range(0, len(new_ips), 100):
-            batch = new_ips[i:i+100]
-            try:
-                # ip-api.com batch endpoint limit is 15 requests per minute
-                response = requests.post("http://ip-api.com/batch", json=batch, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    for item in data:
-                        if item.get('status') == 'success':
-                            cache[item['query']] = item
-                            batch_saves[item['query']] = item
-                        else:
-                            cache[item['query']] = {} # Prevent constant retries for invalid IPs
-                            batch_saves[item['query']] = {}
-                else:
-                    # Rate limited or error, stop querying for now
-                    break
-            except Exception as e:
-                break
-        save_geoip_batch(batch_saves)
+def load_intel_cache():
+    if not os.path.exists(INTEL_DB):
+        init_intel_db()
+    try:
+        conn = sqlite3.connect(INTEL_DB)
+        df = pd.read_sql_query("SELECT * FROM threat_cache", conn)
+        conn.close()
         
+        cache = {}
+        for _, row in df.iterrows():
+            cache[row['ip']] = {
+                'country': row['country'],
+                'isp': row['isp'],
+                'lat': None, # We don't really need lat/lon for the basic map anymore, but we can simulate it if needed, or remove arc map reliance on precise lat/lon
+                'lon': None,
+                'risk_score': row['risk_score'],
+                'classification': row['classification'],
+                'abuse_score': row['abuse_score']
+            }
+        return cache, df
+    except Exception:
+        return {}, pd.DataFrame()
+
+def get_intel_data(ips):
+    cache, _ = load_intel_cache()
+    # The background worker handles all new IP lookups now! We never call APIs from Streamlit anymore.
     return cache
 
 @st.cache_data(ttl=86400)
@@ -264,8 +227,8 @@ if df_conn.empty and df_pkts.empty:
 # Build Tabs
 tabs = st.tabs([
     "Overview", 
-    "Host Intelligence",
-    "Endpoints (GeoIP)",
+    "Threat Intelligence",
+    "Endpoints",
     "Timeline", 
     "Alerts", 
     "Analytics Insights",
@@ -306,104 +269,55 @@ with tabs[0]:
             host_counts = host_counts.sort_values(by="packets", ascending=False).head(10)
             st.bar_chart(host_counts.set_index('host2'))
 
-# 2. HOST INTELLIGENCE & REPUTATION
+# 2. THREAT INTELLIGENCE (NEW PHASE 5)
 with tabs[1]:
-    st.header("Host Intelligence & Reputation")
-    if not df_conn.empty:
-        geoip_map = get_geoip_data(df_conn['ip2'].tolist())
+    st.header("Active Threat Intelligence")
+    st.markdown("Automated enrichment via background AbuseIPDB worker.")
+    
+    _, intel_df = load_intel_cache()
+    if not intel_df.empty:
+        # Metrics
+        col1, col2, col3 = st.columns(3)
+        total_intel = len(intel_df)
+        critical = len(intel_df[intel_df['classification'] == 'CRITICAL'])
+        high = len(intel_df[intel_df['classification'] == 'HIGH'])
         
-        df_rep = df_conn.copy()
-        df_rep['DomainRep'] = df_rep['host2'].apply(get_reputation)
-        df_rep['ISP'] = df_rep['ip2'].map(lambda ip: geoip_map.get(ip, {}).get('isp', 'Unknown'))
+        col1.metric("Enriched IPs", total_intel)
+        col2.metric("Critical Threats", critical, delta_color="inverse")
+        col3.metric("High Risk", high, delta_color="inverse")
         
-        def determine_rep(row):
-            if row['DomainRep'] != 'Unknown': return row['DomainRep']
-            if row['ISP'] != 'Unknown': return row['ISP']
-            return 'Unknown'
+        st.divider()
+        st.subheader("Threat Cache Database")
+        
+        # Color formatting
+        def color_risk(val):
+            if val == 'CRITICAL': return 'color: red; font-weight: bold'
+            elif val == 'HIGH': return 'color: orange; font-weight: bold'
+            elif val == 'SUSPICIOUS': return 'color: yellow'
+            return 'color: green'
             
-        df_rep['FinalReputation'] = df_rep.apply(determine_rep, axis=1)
-        
-        known_pkts = df_rep[df_rep['FinalReputation'] != 'Unknown']['packets'].sum()
-        total_pkts = df_rep['packets'].sum()
-        known_pct = (known_pkts / total_pkts) * 100 if total_pkts > 0 else 0
-        
-        st.metric("Trusted/Known Traffic Volume", f"{known_pct:.1f}%")
-        st.progress(known_pct / 100)
-        
-        st.subheader("Unknown / Unverified Hosts")
-        unknowns = df_rep[df_rep['FinalReputation'] == 'Unknown']
-        unknowns = unknowns[~unknowns['ip2'].str.startswith(('192.168.', '10.', '172.'))]
-        if not unknowns.empty:
-            st.dataframe(unknowns[['ip2', 'host2', 'packets', 'bytes']].sort_values(by="packets", ascending=False), use_container_width=True)
-        else:
-            st.success("All external traffic matches known benign hosts and ISPs.")
+        display_df = intel_df[['ip', 'country', 'isp', 'usage_type', 'abuse_score', 'risk_score', 'classification']].sort_values(by="risk_score", ascending=False)
+        st.dataframe(display_df.style.map(color_risk, subset=['classification']), use_container_width=True, height=400)
+    else:
+        st.info("Threat Cache is empty. Make sure `enrichment_worker.py` is running in the background.")
 
-# 3. ENDPOINTS (GEOIP)
+# 3. ENDPOINTS
 with tabs[2]:
-    st.header("Global Endpoints (GeoIP Mapping)")
+    st.header("Global Endpoints")
+    st.markdown("Note: Map coordinates are disabled in Phase 5 to prioritize Intelligence scoring.")
     
     if not df_conn.empty:
         df_ep = df_conn[['host2', 'ip2', 'packets', 'bytes']].copy()
         df_ep.rename(columns={'host2': 'Resolved Host', 'ip2': 'IP Address', 'packets': 'Packets', 'bytes': 'Bytes'}, inplace=True)
         df_ep = df_ep.groupby(['Resolved Host', 'IP Address']).sum().reset_index()
         
-        # Batch GeoIP Lookup
-        geoip_map = get_geoip_data(df_ep['IP Address'].tolist())
-        df_ep['Country'] = df_ep['IP Address'].map(lambda ip: geoip_map.get(ip, {}).get('country', "Local/Unknown"))
-        df_ep['ISP'] = df_ep['IP Address'].map(lambda ip: geoip_map.get(ip, {}).get('isp', "Unknown"))
-        df_ep['Lat'] = df_ep['IP Address'].map(lambda ip: geoip_map.get(ip, {}).get('lat', None))
-        df_ep['Lon'] = df_ep['IP Address'].map(lambda ip: geoip_map.get(ip, {}).get('lon', None))
+        intel_map = get_intel_data(df_ep['IP Address'].tolist())
+        df_ep['Country'] = df_ep['IP Address'].map(lambda ip: intel_map.get(ip, {}).get('country', "Local/Unknown"))
+        df_ep['ISP'] = df_ep['IP Address'].map(lambda ip: intel_map.get(ip, {}).get('isp', "Unknown"))
+        df_ep['Risk'] = df_ep['IP Address'].map(lambda ip: intel_map.get(ip, {}).get('classification', "UNKNOWN"))
         
         df_ep = df_ep.sort_values(by="Packets", ascending=False).reset_index(drop=True)
-        st.dataframe(df_ep[['Resolved Host', 'IP Address', 'Country', 'ISP', 'Packets', 'Bytes']], use_container_width=True)
-        
-        map_data = df_ep.dropna(subset=['Lat', 'Lon'])
-        if not map_data.empty:
-            st.subheader("Global Traffic Map")
-            
-            layers = []
-            
-            # 1. Scatterplot Layer for endpoints
-            scatter_layer = pdk.Layer(
-                "ScatterplotLayer",
-                map_data,
-                get_position=["Lon", "Lat"],
-                get_color="[200, 30, 0, 160]",
-                get_radius="Packets * 5000",
-                radius_min_pixels=5,
-                radius_max_pixels=30,
-                pickable=True
-            )
-            layers.append(scatter_layer)
-            
-            # 2. Arc Layer from Local to Endpoints
-            local_lat, local_lon = get_local_coords()
-            if local_lat is not None and local_lon is not None:
-                map_data['LocalLat'] = local_lat
-                map_data['LocalLon'] = local_lon
-                
-                arc_layer = pdk.Layer(
-                    "ArcLayer",
-                    data=map_data,
-                    get_source_position=["LocalLon", "LocalLat"],
-                    get_target_position=["Lon", "Lat"],
-                    get_source_color=[0, 255, 0, 160],
-                    get_target_color=[200, 30, 0, 160],
-                    auto_highlight=True,
-                    width_scale=2,
-                    get_width="1 + (Packets / 100)",
-                    width_min_pixels=2,
-                    width_max_pixels=10
-                )
-                layers.append(arc_layer)
-                
-            view_state = pdk.ViewState(latitude=20, longitude=0, zoom=1, pitch=45)
-            st.pydeck_chart(pdk.Deck(
-                map_style="dark",
-                layers=layers,
-                initial_view_state=view_state,
-                tooltip={"text": "{Resolved Host}\n{Country}\nISP: {ISP}\nPackets: {Packets}"}
-            ))
+        st.dataframe(df_ep[['Resolved Host', 'IP Address', 'Country', 'ISP', 'Risk', 'Packets', 'Bytes']], use_container_width=True)
 
 # 4. TIMELINE
 with tabs[3]:

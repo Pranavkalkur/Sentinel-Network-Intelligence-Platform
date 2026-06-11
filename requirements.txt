@@ -7,3 +7,4 @@ pydeck
 networkx
 pyvis
 streamlit-autorefresh
+python-dotenv
