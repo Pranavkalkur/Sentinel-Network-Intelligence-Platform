@@ -399,7 +399,7 @@ with tabs[2]:
                 
             view_state = pdk.ViewState(latitude=20, longitude=0, zoom=1, pitch=45)
             st.pydeck_chart(pdk.Deck(
-                map_style="mapbox://styles/mapbox/dark-v10",
+                map_style="dark",
                 layers=layers,
                 initial_view_state=view_state,
                 tooltip={"text": "{Resolved Host}\n{Country}\nISP: {ISP}\nPackets: {Packets}"}
