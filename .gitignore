@@ -1,0 +1,16 @@
+# Virtual Environments
+venv/
+env/
+.venv/
+__pycache__/
+lib/
+
+# Dynamic Output Files (State & Cache)
+*.json
+*.html
+!README.html
+
+# IDEs and OS files
+.vscode/
+.idea/
+.DS_Store

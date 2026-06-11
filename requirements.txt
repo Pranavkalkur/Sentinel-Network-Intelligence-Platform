@@ -1,0 +1,9 @@
+scapy
+pandas
+streamlit
+altair
+requests
+pydeck
+networkx
+pyvis
+streamlit-autorefresh
